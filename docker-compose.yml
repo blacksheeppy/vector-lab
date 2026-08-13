@@ -1,9 +1,9 @@
 # Vector Raw Logs Lab
 #
-# COMMIT 6:
-# Se incorpora PostgreSQL como almacenamiento central de logs RAW.
+# COMMIT 7:
+# Se agrega resiliencia persistente Gateway -> PostgreSQL.
 #
-# Pipeline actual:
+# Pipeline:
 #
 #   flog
 #     |
@@ -13,11 +13,12 @@
 #     v
 #   Vector Agent
 #     |
+#     | persistent disk buffer
 #     | Vector protocol
 #     v
 #   Vector Gateway
 #     |
-#     | native Postgres sink
+#     | persistent disk buffer
 #     v
 #   PostgreSQL
 #
@@ -26,7 +27,6 @@
 services:
 
   log-generator:
-    # Versión explícita para mantener el laboratorio reproducible.
     image: mingrammer/flog:0.4.0
 
     command:
@@ -42,46 +42,32 @@ services:
       - "-w"
 
     volumes:
-      # flog es el productor del archivo y necesita escritura.
       - type: bind
         source: ./logs
         target: /logs
 
 
   postgres:
-    # Versión patch explícita de PostgreSQL.
-    #
-    # Se evita utilizar tags móviles como:
-    #
-    #   postgres:17
-    #   postgres:17-bookworm
-    #   postgres:latest
     image: postgres:17.10-bookworm
 
     environment:
-      # Credenciales deliberadamente simples para el laboratorio.
-      #
-      # No deben reutilizarse en un entorno real.
       POSTGRES_DB: vector_logs
       POSTGRES_USER: vector
       POSTGRES_PASSWORD: vector
 
     volumes:
-      # Para PostgreSQL 17 y anteriores, la imagen oficial espera los datos
-      # persistentes en /var/lib/postgresql/data.
+      # Persistencia de PostgreSQL.
       - type: volume
         source: postgres-data
         target: /var/lib/postgresql/data
 
-      # El entrypoint oficial ejecuta scripts SQL de este directorio durante
-      # la inicialización de un data directory vacío.
+      # Inicialización de la tabla raw_logs.
       - type: bind
         source: ./postgres/init.sql
         target: /docker-entrypoint-initdb.d/001-init.sql
         read_only: true
 
     healthcheck:
-      # El Gateway no debe arrancar hasta que PostgreSQL acepte conexiones.
       test:
         - CMD-SHELL
         - pg_isready -U vector -d vector_logs
@@ -102,15 +88,25 @@ services:
 
     depends_on:
       postgres:
-        # Evita que el healthcheck inicial del sink PostgreSQL se ejecute
-        # antes de que la base esté preparada.
+        # Esta condición es relevante durante el arranque normal del stack.
+        #
+        # El escenario de este commit detendrá PostgreSQL después de que
+        # Vector Gateway ya se encuentre funcionando.
         condition: service_healthy
 
     volumes:
+      # Configuración del Gateway.
       - type: bind
         source: ./vector-gateway/vector.yaml
         target: /etc/vector/vector.yaml
         read_only: true
+
+      # Estado persistente del Gateway.
+      #
+      # Aquí se almacena el disk buffer Gateway -> PostgreSQL.
+      - type: volume
+        source: vector-gateway-data
+        target: /var/lib/vector
 
 
   vector-agent:
@@ -135,6 +131,7 @@ services:
         target: /logs
         read_only: true
 
+      # Checkpoints y disk buffer Agent -> Gateway.
       - type: volume
         source: vector-agent-data
         target: /var/lib/vector
@@ -142,8 +139,11 @@ services:
 
 volumes:
 
-  # Checkpoints y disk buffer del Vector Agent.
+  # Checkpoints + disk buffer Agent -> Gateway.
   vector-agent-data:
 
-  # Datos persistentes de PostgreSQL.
+  # Disk buffer Gateway -> PostgreSQL.
+  vector-gateway-data:
+
+  # Base de datos PostgreSQL.
   postgres-data:

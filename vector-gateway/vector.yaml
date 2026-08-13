@@ -15,19 +15,29 @@
 #   raw console              storage projection
 #                                   |
 #                                   v
+#                            persistent disk buffer
+#                                   |
+#                                   v
 #                            PostgreSQL sink
 #
-# Seguimos preservando `.message` como línea RAW.
+# El Gateway todavía NO interpreta semánticamente el log.
 #
-# El transform agregado en esta etapa NO interpreta el contenido Apache.
-# Solamente adapta metadata del evento al esquema de almacenamiento.
+# El transform existente solamente adapta metadata al esquema de storage.
+# `raw_message` continúa siendo una copia literal de `.message`.
 # ---------------------------------------------------------------------------
+
+
+# Directorio persistente del Gateway.
+#
+# El disk buffer del sink PostgreSQL se almacena bajo este data_dir.
+# Docker Compose lo respalda mediante el volumen `vector-gateway-data`.
+data_dir: /var/lib/vector
 
 
 sources:
 
   agents:
-    # Recibe eventos enviados mediante el sink nativo `vector`.
+    # Recibe eventos enviados por los Vector Agents.
     type: vector
 
     address: 0.0.0.0:6000
@@ -36,25 +46,22 @@ sources:
 transforms:
 
   storage_record:
-    # Esta transformación solamente prepara el esquema requerido por
-    # PostgreSQL.
+    # Proyección exclusiva para almacenamiento.
     #
-    # NO contiene parsing de la línea Apache.
+    # NO interpreta el contenido Apache.
     type: remap
 
     inputs:
       - agents
 
     source: |
-      # Guardamos primero las propiedades originales para dejar explícito
-      # que raw_message proviene directamente de `.message`.
+      # Preservamos explícitamente el mensaje original antes de construir
+      # el record esperado por PostgreSQL.
       raw_message = .message
       agent_timestamp = .timestamp
       agent_host = .host
       source_file = .file
 
-      # El sink PostgreSQL inserta los campos del evento contra las columnas
-      # de la tabla. Construimos exactamente el record esperado por raw_logs.
       . = {
         "id": uuid_v4(),
         "ingested_at": now(),
@@ -68,10 +75,8 @@ transforms:
 sinks:
 
   raw_console:
-    # Conservamos temporalmente una salida RAW en el Gateway para poder
-    # demostrar visualmente:
-    #
-    #   archivo == Gateway .message == PostgreSQL.raw_message
+    # Esta rama permite continuar inspeccionando lo recibido por el Gateway
+    # aunque PostgreSQL se encuentre temporalmente fuera de servicio.
     type: console
 
     inputs:
@@ -85,31 +90,37 @@ sinks:
 
 
   postgres:
-    # Sink PostgreSQL nativo de Vector.
+    # Sink PostgreSQL nativo.
     type: postgres
 
     inputs:
       - storage_record
 
-    # Credenciales intencionalmente simples para un laboratorio local.
-    #
-    # NO reutilizar estas credenciales en producción.
     endpoint: postgresql://vector:vector@postgres:5432/vector_logs
 
-    # Nombre estático y controlado.
-    #
-    # El sink interpola directamente este valor en la sentencia SQL,
-    # por lo que nunca debe provenir de input no confiable.
     table: raw_logs
 
-    # Durante el laboratorio insertamos un evento por batch.
-    #
-    # Esto simplifica troubleshooting: un evento inválido no provoca que
-    # otros eventos del mismo batch fallen conjuntamente.
+    # Un evento por batch mantiene sencillo el diagnóstico de errores SQL.
     batch:
       max_events: 1
 
-    # El ACK del Gateway hacia el Agent debe depender también de que el
-    # evento llegue correctamente al sink final.
+    # -----------------------------------------------------------------------
+    # Persistent disk buffer
+    # -----------------------------------------------------------------------
+    #
+    # Si PostgreSQL deja de responder, los eventos transformados quedan
+    # almacenados en el data_dir del Gateway.
+    #
+    # Vector 0.57.0 exige aproximadamente 256 MiB como mínimo para un
+    # disk buffer.
+    buffer:
+      type: disk
+      max_size: 268435488
+
+      # Ante un buffer lleno queremos backpressure y NO descarte de eventos.
+      when_full: block
+
+    # Los acknowledgements permiten transferir la responsabilidad del evento
+    # upstream cuando éste ha sido procesado o almacenado durablemente.
     acknowledgements:
       enabled: true
