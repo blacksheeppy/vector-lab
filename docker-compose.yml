@@ -1,0 +1,7 @@
+# Vector Raw Logs Lab
+#
+# COMMIT 1:
+# El archivo Compose existe ￺nicamente para validar la base del laboratorio.
+# Los servicios se incorporar￡n incrementalmente en commits posteriores.
+
+services: {}

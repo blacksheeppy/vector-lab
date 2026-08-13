@@ -1,0 +1,25 @@
+# ---------------------------------------------------------------------------
+# Local environment
+# ---------------------------------------------------------------------------
+# Los archivos de entorno pueden contener credenciales u otros datos locales
+# que no deben formar parte del repositorio.
+.env
+.env.*
+
+# Permitimos versionar una plantilla si se incorpora en commits posteriores.
+!.env.example
+
+
+# ---------------------------------------------------------------------------
+# Editors / IDEs
+# ---------------------------------------------------------------------------
+# Configuración local de herramientas de desarrollo.
+.vscode/
+.idea/
+
+
+# ---------------------------------------------------------------------------
+# Operating system metadata
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
