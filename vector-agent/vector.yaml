@@ -12,7 +12,10 @@
 #   .message
 #        |
 #        v
-#   console
+#   Vector protocol
+#        |
+#        v
+#   Vector Gateway
 #
 # No hay parsing, transforms ni enriquecimiento.
 # La línea original debe permanecer intacta en `.message`.
@@ -42,17 +45,24 @@ sources:
 
 sinks:
 
-  console:
-    # Sink temporal utilizado para validar la ingestión local antes de
-    # introducir Vector Gateway.
-    type: console
+  gateway:
+    # Transporte nativo Vector -> Vector.
+    #
+    # El evento completo se transporta al Gateway; no serializamos `.message`
+    # manualmente ni aplicamos ningún transform.
+    type: vector
 
     inputs:
       - app_logs
 
-    # Emitimos solamente `.message`.
+    # `address` está deprecado en el sink Vector.
+    # Utilizamos routing.endpoints, disponible en Vector 0.57.0.
+    routing:
+      endpoints:
+        - http://vector-gateway:6000
+
+    # Se deja explícitamente sin compresión para mantener esta primera
+    # topología lo más sencilla posible.
     #
-    # raw_message evita serialización JSON y permite comparar directamente
-    # la salida de Vector con la línea existente en logs/app.log.
-    encoding:
-      codec: raw_message
+    # La compresión no es necesaria para demostrar preservación RAW.
+    compression: none

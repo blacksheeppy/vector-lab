@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------------------
+# Vector Gateway
+# ---------------------------------------------------------------------------
+# Responsabilidad actual:
+#
+#   Vector Agent
+#        |
+#        | Vector protocol
+#        v
+#   vector source
+#        |
+#        v
+#   .message
+#        |
+#        v
+#   console
+#
+# El Gateway todavía NO interpreta el contenido del log.
+#
+# No hay parsing, transforms, VRL, regex ni enriquecimiento.
+# ---------------------------------------------------------------------------
+
+
+sources:
+
+  agents:
+    # Recibe eventos enviados mediante el sink nativo `vector`.
+    type: vector
+
+    # Escucha en todas las interfaces del container.
+    #
+    # El puerto solamente necesita ser accesible desde la red interna
+    # de Docker Compose; no se publica hacia el host.
+    address: 0.0.0.0:6000
+
+
+sinks:
+
+  console:
+    # Sink temporal para validar qué recibió exactamente el Gateway.
+    type: console
+
+    inputs:
+      - agents
+
+    # Imprime únicamente `.message`.
+    #
+    # Esto permite comparar directamente la salida del Gateway contra
+    # la línea original almacenada en logs/app.log.
+    encoding:
+      codec: raw_message

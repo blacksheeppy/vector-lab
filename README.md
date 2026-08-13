@@ -122,9 +122,10 @@ docker compose version
 | Componente | Versión |
 |---|---:|
 | flog | 0.4.0 |
-| Vector | 0.57.0 |
+| Vector Agent | 0.57.0 |
+| Vector Gateway | 0.57.0 |
 
-Vector utiliza la variante de imagen:
+Las instancias Vector utilizan:
 
 ```text
 timberio/vector:0.57.0-debian
@@ -143,6 +144,10 @@ logs/app.log
   ▼
 Vector Agent
   │
+  │ Vector protocol
+  ▼
+Vector Gateway
+  │
   ▼
 stdout
 ```
@@ -156,7 +161,9 @@ vector-raw-logs-lab/
 ├── docker-compose.yml
 ├── logs/
 │   └── .gitkeep
-└── vector-agent/
+├── vector-agent/
+│   └── vector.yaml
+└── vector-gateway/
     └── vector.yaml
 ```
 
@@ -178,13 +185,7 @@ log-generator
 
 utiliza `flog` para generar continuamente logs Apache Combined.
 
-Puede iniciarse independientemente:
-
-```bash
-docker compose up -d log-generator
-```
-
-El archivo puede observarse desde el host:
+Puede observarse desde el host:
 
 ```bash
 tail -f logs/app.log
@@ -204,13 +205,13 @@ lee:
 /logs/app.log
 ```
 
-utilizando el source:
+utilizando:
 
-```text
+```yaml
 type: file
 ```
 
-Cada línea se conserva en:
+Cada línea se conserva inicialmente en:
 
 ```text
 .message
@@ -218,80 +219,188 @@ Cada línea se conserva en:
 
 No existen transforms ni parsing.
 
-El pipeline interno actual es:
+El Agent envía el evento al Gateway utilizando el protocolo nativo de Vector:
 
 ```text
 file source
     │
     ▼
-.message
+Vector event
     │
     ▼
-console sink
+vector sink
+    │
+    ▼
+Vector Gateway
 ```
 
-El console sink utiliza:
+El endpoint configurado es:
 
 ```text
-raw_message
+http://vector-gateway:6000
 ```
 
-para imprimir directamente el contenido de `.message`.
-
-Puede observarse con:
-
-```bash
-docker compose logs -f vector-agent
-```
-
-o sin el prefijo agregado por Docker Compose:
-
-```bash
-docker logs -f "$(docker compose ps -q vector-agent)"
-```
-
-## Checkpoints
-
-Vector utiliza:
+El Agent conserva sus checkpoints en:
 
 ```text
 /var/lib/vector
 ```
 
-como `data_dir`.
-
-El directorio se encuentra respaldado por el named volume:
+respaldado por:
 
 ```text
 vector-agent-data
 ```
 
-y contiene el estado necesario para que el source `file` mantenga sus
-checkpoints.
+## Vector Gateway
 
-El comportamiento frente a reinicios y fallos será validado explícitamente en
-una etapa posterior.
+El servicio:
 
-## Validación RAW local
+```text
+vector-gateway
+```
 
-En esta etapa queremos poder demostrar:
+escucha eventos Vector en:
+
+```text
+0.0.0.0:6000
+```
+
+mediante:
+
+```yaml
+type: vector
+```
+
+Actualmente su única salida es un sink:
+
+```yaml
+type: console
+```
+
+con:
+
+```yaml
+encoding:
+  codec: raw_message
+```
+
+Por lo tanto el Gateway imprime solamente:
+
+```text
+.message
+```
+
+sin realizar parsing ni transformaciones.
+
+## Flujo RAW actual
+
+```text
+logs/app.log
+        │
+        ▼
+Vector Agent
+        │
+        │ .message
+        ▼
+Vector protocol
+        │
+        ▼
+Vector Gateway
+        │
+        │ .message
+        ▼
+stdout
+```
+
+La propiedad que queremos demostrar en esta etapa es:
 
 ```text
 logs/app.log line
         =
-Vector .message
+Agent .message
         =
-console raw_message
+Gateway .message
 ```
 
-Todavía no existe transporte de red.
+## Metadata
+
+El protocolo Vector transporta el evento Vector completo, no solamente
+`.message`.
+
+El evento generado originalmente por el file source contiene metadata como:
+
+```text
+message
+file
+host
+timestamp
+source_type
+```
+
+Al atravesar el source `vector` del Gateway, `source_type` representa ahora al
+source receptor y pasa a identificar a Vector.
+
+Por lo tanto no utilizaremos `source_type` como identificador del origen
+original cuando incorporemos almacenamiento.
+
+Los campos relevantes para ese propósito serán principalmente:
+
+```text
+host
+file
+```
+
+mientras que:
+
+```text
+message
+```
+
+continuará siendo la línea RAW que debemos preservar.
+
+## Buffering
+
+En esta etapa no se configura todavía un disk buffer para el transporte
+Agent -> Gateway.
+
+Tampoco se configura explícitamente end-to-end acknowledgement.
+
+Estas capacidades se incorporarán y probarán en la siguiente etapa para poder
+demostrar su comportamiento de forma controlada.
+
+## Validación
+
+Observar el archivo original:
+
+```bash
+tail -f logs/app.log
+```
+
+Observar lo recibido por el Gateway:
+
+```bash
+docker compose logs -f vector-gateway
+```
+
+Observar warnings o errores del Agent:
+
+```bash
+docker compose logs -f vector-agent
+```
+
+El criterio principal es:
+
+```text
+línea en app.log == línea mostrada por vector-gateway
+```
 
 ## Roadmap
 
 1. Inicializar el laboratorio. ✅
 2. Agregar `flog` como generador de logs. ✅
-3. Agregar Vector Agent leyendo el archivo local. ← etapa actual
-4. Agregar Vector Gateway.
+3. Agregar Vector Agent leyendo el archivo local. ✅
+4. Agregar Vector Gateway. ← etapa actual
 5. Validar buffering y recuperación Agent → Gateway.
 6. Persistir logs RAW en PostgreSQL.
 7. Validar recuperación Gateway → PostgreSQL.

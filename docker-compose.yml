@@ -1,7 +1,8 @@
 # Vector Raw Logs Lab
 #
-# COMMIT 3:
-# Se incorpora Vector Agent como collector local.
+# COMMIT 4:
+# Se introduce la separación Agent -> Gateway utilizando el protocolo
+# nativo de Vector.
 #
 # Pipeline actual:
 #
@@ -13,16 +14,20 @@
 #     v
 #   Vector Agent
 #     |
+#     | Vector protocol
+#     v
+#   Vector Gateway
+#     |
 #     v
 #   stdout
 #
-# Todavía no existe Vector Gateway.
+# Todavía no existe almacenamiento persistente de logs.
 
 services:
 
   log-generator:
-    # Se utiliza una versión explícita para mantener el laboratorio
-    # reproducible. No utilizar "latest".
+    # Versión explícita para mantener el laboratorio reproducible.
+    # No utilizar "latest".
     image: mingrammer/flog:0.4.0
 
     # flog 0.4.0 utiliza valores numéricos en segundos para --delay.
@@ -46,28 +51,47 @@ services:
       - "-w"
 
     volumes:
-      # flog necesita acceso de escritura porque es el productor del archivo.
+      # flog es el productor del archivo y necesita escritura.
       - type: bind
         source: ./logs
         target: /logs
 
 
-  vector-agent:
-    # Versión explícita de Vector.
-    # La variante Debian facilita tareas operativas y de troubleshooting
-    # durante las siguientes etapas del laboratorio.
+  vector-gateway:
+    # Agent y Gateway utilizan exactamente la misma versión de Vector
+    # durante este laboratorio.
     image: timberio/vector:0.57.0-debian
 
-    # El source `file` agrega el hostname como metadata.
-    # Fijarlo evita que el ID aleatorio del container sea usado como hostname
-    # y hace reproducibles las pruebas del laboratorio.
+    hostname: vector-gateway
+
+    environment:
+      # Conservamos warnings y errores internos, evitando que logs INFO
+      # interfieran con la comparación del raw_message.
+      VECTOR_LOG: warn
+
+    volumes:
+      # El Gateway todavía no necesita almacenamiento persistente.
+      # Su data_dir/buffering persistente se incorporará cuando corresponda.
+      - type: bind
+        source: ./vector-gateway/vector.yaml
+        target: /etc/vector/vector.yaml
+        read_only: true
+
+
+  vector-agent:
+    image: timberio/vector:0.57.0-debian
+
     hostname: vector-agent
 
     environment:
-      # Conservamos warnings y errores internos, pero evitamos que los logs
-      # informativos normales de Vector contaminen la comparación del
-      # console sink con logs/app.log.
+      # Los eventos ya no salen por console en el Agent.
+      # Este nivel mantiene visibles warnings y errores de transporte.
       VECTOR_LOG: warn
+
+    depends_on:
+      # Esta dependencia solamente establece orden de arranque.
+      # No representa una garantía de disponibilidad del Gateway.
+      - vector-gateway
 
     volumes:
       # Configuración del Agent.
@@ -82,8 +106,7 @@ services:
         target: /logs
         read_only: true
 
-      # Los checkpoints del source `file` deben sobrevivir al ciclo de vida
-      # normal del container.
+      # Estado persistente utilizado por los checkpoints del file source.
       - type: volume
         source: vector-agent-data
         target: /var/lib/vector
@@ -93,6 +116,6 @@ volumes:
 
   # Estado persistente del Vector Agent.
   #
-  # En esta etapa contiene principalmente los checkpoints del source `file`.
-  # El buffering persistente Agent -> Gateway se incorporará más adelante.
+  # En esta etapa contiene principalmente checkpoints del source `file`.
+  # El disk buffer Agent -> Gateway se incorporará en COMMIT 5.
   vector-agent-data:
