@@ -1,7 +1,39 @@
 # Vector Raw Logs Lab
 #
-# COMMIT 1:
-# El archivo Compose existe ￺nicamente para validar la base del laboratorio.
-# Los servicios se incorporar￡n incrementalmente en commits posteriores.
+# COMMIT 2:
+# En esta etapa solamente existe la fuente de logs.
+# Vector y el resto del pipeline se incorporarán en commits posteriores.
 
-services: {}
+services:
+  log-generator:
+    # Se utiliza una versión explícita para mantener el laboratorio reproducible.
+    # No utilizar "latest".
+    image: mingrammer/flog:0.4.0
+
+    # flog 0.4.0 utiliza valores numéricos en segundos para --delay.
+    #
+    # -f apache_combined : genera Apache Combined Log Format.
+    # -t log             : escribe directamente en un archivo.
+    # -o /logs/app.log   : ubicación dentro del container.
+    # -l                 : genera logs indefinidamente.
+    # -d 1               : genera aproximadamente una línea por segundo.
+    # -w                 : permite recrear el archivo si ya existe.
+    command:
+      - "-f"
+      - "apache_combined"
+      - "-t"
+      - "log"
+      - "-o"
+      - "/logs/app.log"
+      - "-l"
+      - "-d"
+      - "1"
+      - "-w"
+
+    volumes:
+      # Bind mount intencional:
+      # queremos observar exactamente el mismo archivo desde el host y,
+      # posteriormente, desde Vector Agent.
+      - type: bind
+        source: ./logs
+        target: /logs

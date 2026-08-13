@@ -11,6 +11,15 @@
 
 
 # ---------------------------------------------------------------------------
+# Runtime logs
+# ---------------------------------------------------------------------------
+# Los logs son datos generados durante la ejecución del laboratorio y no deben
+# almacenarse en Git. Conservamos solamente la estructura del directorio.
+logs/*
+!logs/.gitkeep
+
+
+# ---------------------------------------------------------------------------
 # Editors / IDEs
 # ---------------------------------------------------------------------------
 # Configuración local de herramientas de desarrollo.

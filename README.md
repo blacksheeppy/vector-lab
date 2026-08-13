@@ -88,8 +88,8 @@ El contenido original del log deberá conservarse sin parsing.
 
 * Cada etapa corresponde aproximadamente a un commit funcional.
 * Ningún commit debe dejar intencionalmente rota la infraestructura.
-* Las imágenes de contenedores utilizarán versiones explícitas.
-* No se utilizará la etiqueta `latest`.
+* Las imágenes de contenedores utilizan versiones explícitas.
+* No se utiliza la etiqueta `latest`.
 * Las opciones específicas de Vector deberán verificarse contra la versión utilizada.
 * No se realizará parsing antes de validar el pipeline RAW end-to-end.
 * Los cambios serán revisados antes de realizar cada commit.
@@ -102,7 +102,7 @@ Para trabajar con el laboratorio se necesita:
 * Docker Engine.
 * Docker Compose plugin.
 * Acceso al daemon de Docker.
-* Acceso a un registry de contenedores para las etapas posteriores.
+* Acceso a un registry de contenedores.
 
 La instalación puede verificarse con:
 
@@ -112,25 +112,82 @@ docker version
 docker compose version
 ```
 
+## Versiones utilizadas
+
+Las versiones se incorporan explícitamente a medida que aparecen componentes en el laboratorio.
+
+| Componente | Versión |
+| ---------- | ------- |
+| flog       | 0.4.0   |
+
 ## Estado actual
 
-El repositorio se encuentra en su etapa inicial.
+Actualmente el laboratorio contiene únicamente el generador de logs:
 
-Todavía no existen servicios Docker definidos.
+```text
+flog
+  │
+  ▼
+logs/app.log
+```
+
+Estructura:
 
 ```text
 vector-raw-logs-lab/
 ├── README.md
 ├── .gitignore
-└── docker-compose.yml
+├── docker-compose.yml
+└── logs/
+    └── .gitkeep
 ```
 
-El objetivo de esta etapa es comprobar que Docker Compose puede cargar correctamente la configuración base antes de agregar componentes.
+Durante la ejecución, `flog` crea:
+
+```text
+logs/app.log
+```
+
+Este archivo es runtime data y no se almacena en Git.
+
+## Generador de logs
+
+El servicio:
+
+```text
+log-generator
+```
+
+utiliza `flog` para generar continuamente logs Apache Combined.
+
+El archivo puede observarse directamente desde el host:
+
+```bash
+tail -f logs/app.log
+```
+
+El generador puede iniciarse de manera independiente:
+
+```bash
+docker compose up -d log-generator
+```
+
+Su estado puede consultarse con:
+
+```bash
+docker compose ps
+```
+
+Para detenerlo:
+
+```bash
+docker compose stop log-generator
+```
 
 ## Roadmap
 
-1. Inicializar el laboratorio.
-2. Agregar `flog` como generador de logs.
+1. Inicializar el laboratorio. ✅
+2. Agregar `flog` como generador de logs. ← etapa actual
 3. Agregar Vector Agent leyendo el archivo local.
 4. Agregar Vector Gateway.
 5. Validar buffering y recuperación Agent → Gateway.
