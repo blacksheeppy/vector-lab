@@ -51,44 +51,6 @@ PostgreSQL
 Grafana
 ```
 
-### Vector Agent
-
-El Agent estará orientado a:
-
-```text
-collection
-checkpoint
-buffer
-retry
-transport
-```
-
-### Vector Gateway
-
-El Gateway permitirá centralizar:
-
-```text
-reception
-buffering
-routing
-storage delivery
-```
-
-Durante el primer milestone no interpretará semánticamente el contenido
-de los logs.
-
-### PostgreSQL
-
-PostgreSQL almacenará inicialmente:
-
-```text
-raw_message
-+
-transport metadata
-```
-
-El contenido original del log deberá conservarse sin parsing.
-
 ## Principios del laboratorio
 
 - Cada etapa corresponde aproximadamente a un commit funcional.
@@ -143,6 +105,10 @@ logs/app.log
   │
   ▼
 Vector Agent
+  │
+  ├── checkpoint
+  ├── disk buffer
+  ├── retry
   │
   │ Vector protocol
   ▼
@@ -205,13 +171,13 @@ lee:
 /logs/app.log
 ```
 
-utilizando:
+mediante:
 
 ```yaml
 type: file
 ```
 
-Cada línea se conserva inicialmente en:
+Cada línea se conserva en:
 
 ```text
 .message
@@ -219,13 +185,13 @@ Cada línea se conserva inicialmente en:
 
 No existen transforms ni parsing.
 
-El Agent envía el evento al Gateway utilizando el protocolo nativo de Vector:
+El Agent envía eventos al Gateway utilizando el protocolo nativo de Vector:
 
 ```text
 file source
     │
     ▼
-Vector event
+disk buffer
     │
     ▼
 vector sink
@@ -234,86 +200,308 @@ vector sink
 Vector Gateway
 ```
 
-El endpoint configurado es:
+## Estado persistente del Agent
 
-```text
-http://vector-gateway:6000
-```
-
-El Agent conserva sus checkpoints en:
+Vector utiliza:
 
 ```text
 /var/lib/vector
 ```
 
-respaldado por:
+como `data_dir`.
+
+Docker Compose monta allí el named volume:
 
 ```text
 vector-agent-data
 ```
 
-## Vector Gateway
-
-El servicio:
+Este directorio contiene estado operacional persistente como:
 
 ```text
-vector-gateway
+file checkpoints
+disk buffers
 ```
 
-escucha eventos Vector en:
+Por lo tanto:
 
 ```text
-0.0.0.0:6000
+vector-agent container
+       X
+       │ restart
+       ▼
+vector-agent-data
+       │
+       ├── checkpoints
+       └── disk buffer
 ```
 
-mediante:
+continúa existiendo.
+
+## Disk buffer
+
+El transporte Agent -> Gateway utiliza:
 
 ```yaml
-type: vector
+buffer:
+  type: disk
+  max_size: 268435488
+  when_full: block
 ```
 
-Actualmente su única salida es un sink:
+El disk buffer permite conservar eventos pendientes cuando el Gateway no está
+temporalmente disponible.
 
-```yaml
-type: console
-```
+`when_full: block` significa que si el buffer alcanza su capacidad, Vector
+aplica backpressure hacia los componentes anteriores en vez de descartar
+deliberadamente eventos nuevos.
 
-con:
-
-```yaml
-encoding:
-  codec: raw_message
-```
-
-Por lo tanto el Gateway imprime solamente:
-
-```text
-.message
-```
-
-sin realizar parsing ni transformaciones.
-
-## Flujo RAW actual
+En esta arquitectura eso termina trasladando el backlog hacia el borde:
 
 ```text
 logs/app.log
-        │
-        ▼
-Vector Agent
-        │
-        │ .message
-        ▼
-Vector protocol
-        │
-        ▼
-Vector Gateway
-        │
-        │ .message
-        ▼
-stdout
 ```
 
-La propiedad que queremos demostrar en esta etapa es:
+si el Agent ya no puede continuar consumiendo.
+
+## Retries
+
+El sink `vector` dispone de retry automático para errores recuperables.
+
+No se modifican todavía sus parámetros predeterminados.
+
+Conceptualmente:
+
+```text
+send
+ │
+ ├── success ───────────────► continuar
+ │
+ └── failure
+       │
+       ▼
+     retry
+       │
+       ▼
+     backoff
+       │
+       ▼
+     retry
+```
+
+## Acknowledgements
+
+El sink `vector` del Agent tiene:
+
+```yaml
+acknowledgements:
+  enabled: true
+```
+
+El file source soporta acknowledgements, pero no configuramos esta propiedad
+directamente en el source.
+
+El Gateway habilita acknowledgements en su console sink.
+
+La cadena actual es:
+
+```text
+file source
+    │
+    ▼
+Agent disk buffer
+    │
+    ▼
+vector sink
+    │
+    ▼
+vector source
+    │
+    ▼
+Gateway console
+    │
+    ▼
+ACK
+```
+
+En esta etapa:
+
+```text
+ACK
+=
+evento procesado por el console sink del Gateway
+```
+
+Todavía NO significa:
+
+```text
+ACK
+=
+evento persistido en PostgreSQL
+```
+
+PostgreSQL será incorporado posteriormente.
+
+## Checkpoints
+
+El file source mantiene checkpoints dentro del `data_dir`.
+
+Los checkpoints permiten reanudar la lectura de archivos previamente
+descubiertos después de reiniciar el Agent.
+
+Es importante distinguir:
+
+```text
+checkpoint
+```
+
+de:
+
+```text
+disk buffer
+```
+
+El checkpoint responde:
+
+```text
+¿hasta dónde avancé en el archivo?
+```
+
+El disk buffer responde:
+
+```text
+¿qué eventos aceptados todavía tengo pendientes de entregar?
+```
+
+Ambos estados son persistentes en este laboratorio.
+
+## Fallo del Gateway
+
+El escenario esperado es:
+
+```text
+flog
+  │
+  ▼
+app.log
+  │
+  ▼
+Agent
+  │
+  ▼
+disk buffer
+  │
+  X
+Gateway
+```
+
+Mientras el Gateway está detenido:
+
+- flog continúa escribiendo;
+- el Agent continúa leyendo mientras tenga capacidad;
+- los eventos pendientes se almacenan en el disk buffer;
+- el sink intenta recuperar la conexión;
+- no se utiliza `drop_newest`.
+
+Cuando el Gateway vuelve:
+
+```text
+disk buffer
+    │
+    ▼
+retry
+    │
+    ▼
+Gateway
+    │
+    ▼
+backlog entregado
+```
+
+## Reinicio del Agent
+
+También queremos validar:
+
+```text
+Gateway DOWN
+     │
+     ▼
+Agent acumula backlog
+     │
+     ▼
+restart Agent
+     │
+     ▼
+checkpoint + disk buffer sobreviven
+     │
+     ▼
+Gateway UP
+     │
+     ▼
+backlog recuperado
+```
+
+Esto permite diferenciar dos mecanismos:
+
+```text
+checkpoint = posición de lectura
+buffer     = eventos pendientes de entrega
+```
+
+## Garantía de entrega
+
+El objetivo es acercarnos a una semántica:
+
+```text
+at-least-once
+```
+
+y no:
+
+```text
+exactly-once
+```
+
+Un evento puede potencialmente volver a enviarse en determinadas condiciones
+de fallo.
+
+Por eso una arquitectura durable debe asumir que:
+
+```text
+duplicates are possible
+```
+
+y diseñar el almacenamiento posterior en consecuencia.
+
+## Límites de la durabilidad
+
+El disk buffer mejora la durabilidad, pero no significa que cada byte que haya
+entrado en memoria sea inmediatamente crash-safe.
+
+Vector sincroniza periódicamente el buffer a disco.
+
+Además:
+
+```text
+when_full: block
+```
+
+no crea capacidad infinita.
+
+Cuando el buffer se llena, el backlog debe acumularse en el origen.
+
+En este laboratorio el origen es:
+
+```text
+logs/app.log
+```
+
+Por eso la preservación completa también depende de que el archivo no sea
+eliminado o rotado antes de que Vector pueda consumirlo.
+
+## Validación RAW
+
+La propiedad de las etapas anteriores continúa siendo:
 
 ```text
 logs/app.log line
@@ -323,85 +511,15 @@ Agent .message
 Gateway .message
 ```
 
-## Metadata
-
-El protocolo Vector transporta el evento Vector completo, no solamente
-`.message`.
-
-El evento generado originalmente por el file source contiene metadata como:
-
-```text
-message
-file
-host
-timestamp
-source_type
-```
-
-Al atravesar el source `vector` del Gateway, `source_type` representa ahora al
-source receptor y pasa a identificar a Vector.
-
-Por lo tanto no utilizaremos `source_type` como identificador del origen
-original cuando incorporemos almacenamiento.
-
-Los campos relevantes para ese propósito serán principalmente:
-
-```text
-host
-file
-```
-
-mientras que:
-
-```text
-message
-```
-
-continuará siendo la línea RAW que debemos preservar.
-
-## Buffering
-
-En esta etapa no se configura todavía un disk buffer para el transporte
-Agent -> Gateway.
-
-Tampoco se configura explícitamente end-to-end acknowledgement.
-
-Estas capacidades se incorporarán y probarán en la siguiente etapa para poder
-demostrar su comportamiento de forma controlada.
-
-## Validación
-
-Observar el archivo original:
-
-```bash
-tail -f logs/app.log
-```
-
-Observar lo recibido por el Gateway:
-
-```bash
-docker compose logs -f vector-gateway
-```
-
-Observar warnings o errores del Agent:
-
-```bash
-docker compose logs -f vector-agent
-```
-
-El criterio principal es:
-
-```text
-línea en app.log == línea mostrada por vector-gateway
-```
+El buffering no debe modificar el contenido del evento.
 
 ## Roadmap
 
 1. Inicializar el laboratorio. ✅
 2. Agregar `flog` como generador de logs. ✅
 3. Agregar Vector Agent leyendo el archivo local. ✅
-4. Agregar Vector Gateway. ← etapa actual
-5. Validar buffering y recuperación Agent → Gateway.
+4. Agregar Vector Gateway. ✅
+5. Validar buffering y recuperación Agent → Gateway. ← etapa actual
 6. Persistir logs RAW en PostgreSQL.
 7. Validar recuperación Gateway → PostgreSQL.
 8. Agregar visualización con Grafana.

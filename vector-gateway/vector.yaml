@@ -18,6 +18,10 @@
 # El Gateway todavía NO interpreta el contenido del log.
 #
 # No hay parsing, transforms, VRL, regex ni enriquecimiento.
+#
+# En esta etapa habilitamos acknowledgements en el sink final para que
+# el Vector source pueda propagar el estado de procesamiento hacia
+# el Agent.
 # ---------------------------------------------------------------------------
 
 
@@ -27,17 +31,15 @@ sources:
     # Recibe eventos enviados mediante el sink nativo `vector`.
     type: vector
 
-    # Escucha en todas las interfaces del container.
-    #
-    # El puerto solamente necesita ser accesible desde la red interna
-    # de Docker Compose; no se publica hacia el host.
+    # Escucha solamente dentro de la red Docker Compose.
     address: 0.0.0.0:6000
 
 
 sinks:
 
   console:
-    # Sink temporal para validar qué recibió exactamente el Gateway.
+    # Sink temporal utilizado como destino final mientras todavía no existe
+    # almacenamiento persistente centralizado.
     type: console
 
     inputs:
@@ -45,7 +47,14 @@ sinks:
 
     # Imprime únicamente `.message`.
     #
-    # Esto permite comparar directamente la salida del Gateway contra
-    # la línea original almacenada en logs/app.log.
+    # Esto mantiene verificable la igualdad con logs/app.log.
     encoding:
       codec: raw_message
+
+    # Permite que el vector source participe en la cadena de acknowledgements
+    # y comunique hacia el Agent el resultado del procesamiento del evento.
+    #
+    # En esta etapa ACK significa procesamiento por el console sink.
+    # Todavía NO representa persistencia en storage.
+    acknowledgements:
+      enabled: true

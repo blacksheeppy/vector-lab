@@ -9,7 +9,7 @@
 #   file source
 #        |
 #        v
-#   .message
+#   disk buffer
 #        |
 #        v
 #   Vector protocol
@@ -18,12 +18,24 @@
 #   Vector Gateway
 #
 # No hay parsing, transforms ni enriquecimiento.
+#
 # La línea original debe permanecer intacta en `.message`.
+#
+# En esta etapa agregamos:
+#
+#   - checkpoint persistente;
+#   - disk buffer;
+#   - acknowledgements;
+#   - retry de transporte.
 # ---------------------------------------------------------------------------
 
 
-# El source `file` almacena sus checkpoints en este directorio.
-# Docker Compose lo monta sobre un volumen persistente.
+# Directorio persistente de estado del Agent.
+#
+# Vector utiliza este directorio tanto para los checkpoints del file source
+# como para los disk buffers.
+#
+# Docker Compose monta aquí el named volume `vector-agent-data`.
 data_dir: /var/lib/vector
 
 
@@ -36,10 +48,10 @@ sources:
     include:
       - /logs/app.log
 
-    # En el primer descubrimiento del archivo queremos leer también las
-    # líneas que flog haya generado antes de iniciar Vector.
+    # En el primer descubrimiento del archivo se comienza desde el inicio.
     #
-    # Si ya existe un checkpoint válido, Vector reanudará desde él.
+    # Una vez creado un checkpoint, Vector utiliza dicho checkpoint para
+    # determinar desde dónde continuar después de un reinicio.
     read_from: beginning
 
 
@@ -48,21 +60,45 @@ sinks:
   gateway:
     # Transporte nativo Vector -> Vector.
     #
-    # El evento completo se transporta al Gateway; no serializamos `.message`
-    # manualmente ni aplicamos ningún transform.
+    # El evento completo se transporta al Gateway sin transformar `.message`.
     type: vector
 
     inputs:
       - app_logs
 
-    # `address` está deprecado en el sink Vector.
+    # `address` está deprecado para el sink Vector.
     # Utilizamos routing.endpoints, disponible en Vector 0.57.0.
     routing:
       endpoints:
         - http://vector-gateway:6000
 
-    # Se deja explícitamente sin compresión para mantener esta primera
-    # topología lo más sencilla posible.
-    #
-    # La compresión no es necesaria para demostrar preservación RAW.
+    # Mantener deshabilitada la compresión simplifica el laboratorio.
+    # No es necesaria para demostrar buffering ni preservación RAW.
     compression: none
+
+    # -----------------------------------------------------------------------
+    # Persistent disk buffer
+    # -----------------------------------------------------------------------
+    #
+    # El buffer pertenece al sink Agent -> Gateway.
+    #
+    # Si el Gateway no está disponible, los eventos pendientes quedan
+    # almacenados en el data_dir persistente del Agent.
+    #
+    # Vector 0.57.0 requiere aproximadamente 256 MiB como tamaño mínimo
+    # para un disk buffer.
+    buffer:
+      type: disk
+      max_size: 268435488
+      when_full: block
+
+    # -----------------------------------------------------------------------
+    # End-to-end acknowledgements
+    # -----------------------------------------------------------------------
+    #
+    # El file source soporta acknowledgements.
+    #
+    # La configuración se realiza en el sink porque configurar
+    # acknowledgements directamente en sources está deprecado.
+    acknowledgements:
+      enabled: true
