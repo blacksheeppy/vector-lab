@@ -1,8 +1,7 @@
 # Vector Raw Logs Lab
 #
-# COMMIT 4:
-# Se introduce la separación Agent -> Gateway utilizando el protocolo
-# nativo de Vector.
+# COMMIT 6:
+# Se incorpora PostgreSQL como almacenamiento central de logs RAW.
 #
 # Pipeline actual:
 #
@@ -18,26 +17,18 @@
 #     v
 #   Vector Gateway
 #     |
+#     | native Postgres sink
 #     v
-#   stdout
+#   PostgreSQL
 #
-# Todavía no existe almacenamiento persistente de logs.
+# Todavía NO existe parsing del contenido Apache.
 
 services:
 
   log-generator:
     # Versión explícita para mantener el laboratorio reproducible.
-    # No utilizar "latest".
     image: mingrammer/flog:0.4.0
 
-    # flog 0.4.0 utiliza valores numéricos en segundos para --delay.
-    #
-    # -f apache_combined : genera Apache Combined Log Format.
-    # -t log             : escribe directamente en un archivo.
-    # -o /logs/app.log   : ubicación dentro del container.
-    # -l                 : genera logs indefinidamente.
-    # -d 1               : genera aproximadamente una línea por segundo.
-    # -w                 : permite recrear el archivo si ya existe.
     command:
       - "-f"
       - "apache_combined"
@@ -57,21 +48,65 @@ services:
         target: /logs
 
 
+  postgres:
+    # Versión patch explícita de PostgreSQL.
+    #
+    # Se evita utilizar tags móviles como:
+    #
+    #   postgres:17
+    #   postgres:17-bookworm
+    #   postgres:latest
+    image: postgres:17.10-bookworm
+
+    environment:
+      # Credenciales deliberadamente simples para el laboratorio.
+      #
+      # No deben reutilizarse en un entorno real.
+      POSTGRES_DB: vector_logs
+      POSTGRES_USER: vector
+      POSTGRES_PASSWORD: vector
+
+    volumes:
+      # Para PostgreSQL 17 y anteriores, la imagen oficial espera los datos
+      # persistentes en /var/lib/postgresql/data.
+      - type: volume
+        source: postgres-data
+        target: /var/lib/postgresql/data
+
+      # El entrypoint oficial ejecuta scripts SQL de este directorio durante
+      # la inicialización de un data directory vacío.
+      - type: bind
+        source: ./postgres/init.sql
+        target: /docker-entrypoint-initdb.d/001-init.sql
+        read_only: true
+
+    healthcheck:
+      # El Gateway no debe arrancar hasta que PostgreSQL acepte conexiones.
+      test:
+        - CMD-SHELL
+        - pg_isready -U vector -d vector_logs
+
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+
   vector-gateway:
-    # Agent y Gateway utilizan exactamente la misma versión de Vector
-    # durante este laboratorio.
     image: timberio/vector:0.57.0-debian
 
     hostname: vector-gateway
 
     environment:
-      # Conservamos warnings y errores internos, evitando que logs INFO
-      # interfieran con la comparación del raw_message.
       VECTOR_LOG: warn
 
+    depends_on:
+      postgres:
+        # Evita que el healthcheck inicial del sink PostgreSQL se ejecute
+        # antes de que la base esté preparada.
+        condition: service_healthy
+
     volumes:
-      # El Gateway todavía no necesita almacenamiento persistente.
-      # Su data_dir/buffering persistente se incorporará cuando corresponda.
       - type: bind
         source: ./vector-gateway/vector.yaml
         target: /etc/vector/vector.yaml
@@ -84,29 +119,22 @@ services:
     hostname: vector-agent
 
     environment:
-      # Los eventos ya no salen por console en el Agent.
-      # Este nivel mantiene visibles warnings y errores de transporte.
       VECTOR_LOG: warn
 
     depends_on:
-      # Esta dependencia solamente establece orden de arranque.
-      # No representa una garantía de disponibilidad del Gateway.
       - vector-gateway
 
     volumes:
-      # Configuración del Agent.
       - type: bind
         source: ./vector-agent/vector.yaml
         target: /etc/vector/vector.yaml
         read_only: true
 
-      # El Agent solamente necesita leer el archivo producido por flog.
       - type: bind
         source: ./logs
         target: /logs
         read_only: true
 
-      # Estado persistente utilizado por los checkpoints del file source.
       - type: volume
         source: vector-agent-data
         target: /var/lib/vector
@@ -114,8 +142,8 @@ services:
 
 volumes:
 
-  # Estado persistente del Vector Agent.
-  #
-  # En esta etapa contiene principalmente checkpoints del source `file`.
-  # El disk buffer Agent -> Gateway se incorporará en COMMIT 5.
+  # Checkpoints y disk buffer del Vector Agent.
   vector-agent-data:
+
+  # Datos persistentes de PostgreSQL.
+  postgres-data:

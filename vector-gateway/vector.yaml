@@ -9,19 +9,18 @@
 #        v
 #   vector source
 #        |
-#        v
-#   .message
-#        |
-#        v
-#   console
+#        +--------------------------+
+#        |                          |
+#        v                          v
+#   raw console              storage projection
+#                                   |
+#                                   v
+#                            PostgreSQL sink
 #
-# El Gateway todavía NO interpreta el contenido del log.
+# Seguimos preservando `.message` como línea RAW.
 #
-# No hay parsing, transforms, VRL, regex ni enriquecimiento.
-#
-# En esta etapa habilitamos acknowledgements en el sink final para que
-# el Vector source pueda propagar el estado de procesamiento hacia
-# el Agent.
+# El transform agregado en esta etapa NO interpreta el contenido Apache.
+# Solamente adapta metadata del evento al esquema de almacenamiento.
 # ---------------------------------------------------------------------------
 
 
@@ -31,30 +30,86 @@ sources:
     # Recibe eventos enviados mediante el sink nativo `vector`.
     type: vector
 
-    # Escucha solamente dentro de la red Docker Compose.
     address: 0.0.0.0:6000
+
+
+transforms:
+
+  storage_record:
+    # Esta transformación solamente prepara el esquema requerido por
+    # PostgreSQL.
+    #
+    # NO contiene parsing de la línea Apache.
+    type: remap
+
+    inputs:
+      - agents
+
+    source: |
+      # Guardamos primero las propiedades originales para dejar explícito
+      # que raw_message proviene directamente de `.message`.
+      raw_message = .message
+      agent_timestamp = .timestamp
+      agent_host = .host
+      source_file = .file
+
+      # El sink PostgreSQL inserta los campos del evento contra las columnas
+      # de la tabla. Construimos exactamente el record esperado por raw_logs.
+      . = {
+        "id": uuid_v4(),
+        "ingested_at": now(),
+        "agent_timestamp": agent_timestamp,
+        "host": agent_host,
+        "source_file": source_file,
+        "raw_message": raw_message
+      }
 
 
 sinks:
 
-  console:
-    # Sink temporal utilizado como destino final mientras todavía no existe
-    # almacenamiento persistente centralizado.
+  raw_console:
+    # Conservamos temporalmente una salida RAW en el Gateway para poder
+    # demostrar visualmente:
+    #
+    #   archivo == Gateway .message == PostgreSQL.raw_message
     type: console
 
     inputs:
       - agents
 
-    # Imprime únicamente `.message`.
-    #
-    # Esto mantiene verificable la igualdad con logs/app.log.
     encoding:
       codec: raw_message
 
-    # Permite que el vector source participe en la cadena de acknowledgements
-    # y comunique hacia el Agent el resultado del procesamiento del evento.
+    acknowledgements:
+      enabled: true
+
+
+  postgres:
+    # Sink PostgreSQL nativo de Vector.
+    type: postgres
+
+    inputs:
+      - storage_record
+
+    # Credenciales intencionalmente simples para un laboratorio local.
     #
-    # En esta etapa ACK significa procesamiento por el console sink.
-    # Todavía NO representa persistencia en storage.
+    # NO reutilizar estas credenciales en producción.
+    endpoint: postgresql://vector:vector@postgres:5432/vector_logs
+
+    # Nombre estático y controlado.
+    #
+    # El sink interpola directamente este valor en la sentencia SQL,
+    # por lo que nunca debe provenir de input no confiable.
+    table: raw_logs
+
+    # Durante el laboratorio insertamos un evento por batch.
+    #
+    # Esto simplifica troubleshooting: un evento inválido no provoca que
+    # otros eventos del mismo batch fallen conjuntamente.
+    batch:
+      max_events: 1
+
+    # El ACK del Gateway hacia el Agent debe depender también de que el
+    # evento llegue correctamente al sink final.
     acknowledgements:
       enabled: true

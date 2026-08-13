@@ -23,17 +23,16 @@ mensaje leído por Vector Agent
     =
 mensaje recibido por Vector Gateway
     =
-raw_message almacenado
+PostgreSQL.raw_message
 ```
 
-Durante este milestone no se realizará parsing semántico de los logs.
+Durante este milestone no se realiza parsing semántico de los logs.
 
 ## Arquitectura objetivo
 
 ```text
 flog
   │
-  │ genera logs
   ▼
 archivo .log
   │
@@ -58,8 +57,8 @@ Grafana
 - Las imágenes de contenedores utilizan versiones explícitas.
 - No se utiliza la etiqueta `latest`.
 - Las opciones específicas de Vector se verifican contra la versión utilizada.
-- No se realizará parsing antes de validar el pipeline RAW end-to-end.
-- Los cambios serán revisados antes de realizar cada commit.
+- No se realiza parsing antes de validar el pipeline RAW end-to-end.
+- Los cambios se revisan antes de realizar cada commit.
 
 ## Requisitos
 
@@ -86,16 +85,19 @@ docker compose version
 | flog | 0.4.0 |
 | Vector Agent | 0.57.0 |
 | Vector Gateway | 0.57.0 |
+| PostgreSQL | 17.10 |
 
-Las instancias Vector utilizan:
+Las imágenes utilizadas son:
 
 ```text
+mingrammer/flog:0.4.0
 timberio/vector:0.57.0-debian
+postgres:17.10-bookworm
 ```
 
 ## Estado actual
 
-El pipeline implementado actualmente es:
+El pipeline implementado es:
 
 ```text
 flog
@@ -108,14 +110,18 @@ Vector Agent
   │
   ├── checkpoint
   ├── disk buffer
-  ├── retry
+  └── retry
   │
   │ Vector protocol
   ▼
 Vector Gateway
   │
-  ▼
-stdout
+  ├── raw console
+  │
+  └── storage projection
+          │
+          ▼
+      PostgreSQL
 ```
 
 Estructura:
@@ -129,29 +135,17 @@ vector-raw-logs-lab/
 │   └── .gitkeep
 ├── vector-agent/
 │   └── vector.yaml
-└── vector-gateway/
-    └── vector.yaml
+├── vector-gateway/
+│   └── vector.yaml
+└── postgres/
+    └── init.sql
 ```
-
-Durante la ejecución, `flog` crea:
-
-```text
-logs/app.log
-```
-
-Este archivo es runtime data y no se almacena en Git.
 
 ## Generador de logs
 
-El servicio:
+`log-generator` utiliza `flog` para generar continuamente Apache Combined.
 
-```text
-log-generator
-```
-
-utiliza `flog` para generar continuamente logs Apache Combined.
-
-Puede observarse desde el host:
+El archivo puede observarse desde el host:
 
 ```bash
 tail -f logs/app.log
@@ -159,377 +153,301 @@ tail -f logs/app.log
 
 ## Vector Agent
 
-El servicio:
-
-```text
-vector-agent
-```
-
-lee:
+El Agent lee:
 
 ```text
 /logs/app.log
 ```
 
-mediante:
+utilizando:
 
 ```yaml
 type: file
 ```
 
-Cada línea se conserva en:
+La línea original queda almacenada en:
 
 ```text
 .message
 ```
 
-No existen transforms ni parsing.
-
-El Agent envía eventos al Gateway utilizando el protocolo nativo de Vector:
+El Agent conserva:
 
 ```text
-file source
-    │
-    ▼
+checkpoint
 disk buffer
-    │
-    ▼
-vector sink
-    │
-    ▼
-Vector Gateway
 ```
 
-## Estado persistente del Agent
-
-Vector utiliza:
+bajo:
 
 ```text
 /var/lib/vector
 ```
 
-como `data_dir`.
-
-Docker Compose monta allí el named volume:
+respaldado por el volumen:
 
 ```text
 vector-agent-data
 ```
 
-Este directorio contiene estado operacional persistente como:
+El transporte hacia el Gateway utiliza el protocolo nativo de Vector.
 
-```text
-file checkpoints
-disk buffers
-```
+## Vector Gateway
 
-Por lo tanto:
-
-```text
-vector-agent container
-       X
-       │ restart
-       ▼
-vector-agent-data
-       │
-       ├── checkpoints
-       └── disk buffer
-```
-
-continúa existiendo.
-
-## Disk buffer
-
-El transporte Agent -> Gateway utiliza:
+El Gateway recibe eventos mediante:
 
 ```yaml
-buffer:
-  type: disk
-  max_size: 268435488
-  when_full: block
+type: vector
 ```
 
-El disk buffer permite conservar eventos pendientes cuando el Gateway no está
-temporalmente disponible.
-
-`when_full: block` significa que si el buffer alcanza su capacidad, Vector
-aplica backpressure hacia los componentes anteriores en vez de descartar
-deliberadamente eventos nuevos.
-
-En esta arquitectura eso termina trasladando el backlog hacia el borde:
+en:
 
 ```text
-logs/app.log
+0.0.0.0:6000
 ```
 
-si el Agent ya no puede continuar consumiendo.
-
-## Retries
-
-El sink `vector` dispone de retry automático para errores recuperables.
-
-No se modifican todavía sus parámetros predeterminados.
-
-Conceptualmente:
+La entrada se divide actualmente en dos ramas:
 
 ```text
-send
- │
- ├── success ───────────────► continuar
- │
- └── failure
-       │
-       ▼
-     retry
-       │
-       ▼
-     backoff
-       │
-       ▼
-     retry
+                 ┌──► raw console
+Agent ─► Gateway │
+                 └──► storage_record ─► PostgreSQL
 ```
 
-## Acknowledgements
+### Raw console
 
-El sink `vector` del Agent tiene:
-
-```yaml
-acknowledgements:
-  enabled: true
-```
-
-El file source soporta acknowledgements, pero no configuramos esta propiedad
-directamente en el source.
-
-El Gateway habilita acknowledgements en su console sink.
-
-La cadena actual es:
+Esta salida imprime solamente:
 
 ```text
-file source
-    │
-    ▼
-Agent disk buffer
-    │
-    ▼
-vector sink
-    │
-    ▼
-vector source
-    │
-    ▼
-Gateway console
-    │
-    ▼
-ACK
+.message
 ```
 
-En esta etapa:
+y permite continuar comparando el evento recibido contra el archivo original.
+
+### Storage projection
+
+Para insertar en PostgreSQL se utiliza un pequeño transform:
 
 ```text
-ACK
-=
-evento procesado por el console sink del Gateway
+.message   → raw_message
+.file      → source_file
+.host      → host
+.timestamp → agent_timestamp
 ```
 
-Todavía NO significa:
+También agrega:
 
 ```text
-ACK
-=
-evento persistido en PostgreSQL
+id
+ingested_at
 ```
 
-PostgreSQL será incorporado posteriormente.
+Este transform NO interpreta el contenido del log.
 
-## Checkpoints
-
-El file source mantiene checkpoints dentro del `data_dir`.
-
-Los checkpoints permiten reanudar la lectura de archivos previamente
-descubiertos después de reiniciar el Agent.
-
-Es importante distinguir:
+No existen todavía campos como:
 
 ```text
-checkpoint
+method
+status
+path
+remote_addr
 ```
 
-de:
+## PostgreSQL
+
+PostgreSQL almacena los eventos en:
 
 ```text
-disk buffer
+raw_logs
 ```
 
-El checkpoint responde:
+con el esquema lógico:
 
 ```text
-¿hasta dónde avancé en el archivo?
+id
+ingested_at
+agent_timestamp
+host
+source_file
+raw_message
 ```
 
-El disk buffer responde:
+### raw_message
+
+Es una copia directa de:
 
 ```text
-¿qué eventos aceptados todavía tengo pendientes de entregar?
+.message
 ```
 
-Ambos estados son persistentes en este laboratorio.
+y debe permanecer igual a la línea producida originalmente por flog.
 
-## Fallo del Gateway
+### agent_timestamp
 
-El escenario esperado es:
+Representa el timestamp generado por el file source cuando la línea fue
+ingerida por el Agent.
+
+No representa el timestamp contenido dentro del Apache log.
+
+### ingested_at
+
+Representa el momento en que el Gateway preparó el evento para persistencia.
+
+No debe interpretarse como el instante exacto de COMMIT de PostgreSQL.
+
+### id
+
+Es un UUID generado por el Gateway para identificar la fila almacenada.
+
+Actualmente no se utiliza como mecanismo de deduplicación end-to-end.
+
+## Limitación del sink PostgreSQL
+
+Vector utiliza internamente `jsonb_populate_recordset` para insertar eventos.
+
+Por este motivo, los defaults PostgreSQL no se comportan como se esperaría
+para campos ausentes del evento.
+
+Por ejemplo, no dependemos de:
+
+```sql
+id BIGSERIAL
+```
+
+ni:
+
+```sql
+ingested_at TIMESTAMPTZ DEFAULT now()
+```
+
+En su lugar el Gateway construye explícitamente todos los campos requeridos
+por la tabla.
+
+## Flujo RAW
 
 ```text
 flog
   │
   ▼
-app.log
+raw line
   │
   ▼
-Agent
-  │
-  ▼
-disk buffer
-  │
-  X
-Gateway
-```
-
-Mientras el Gateway está detenido:
-
-- flog continúa escribiendo;
-- el Agent continúa leyendo mientras tenga capacidad;
-- los eventos pendientes se almacenan en el disk buffer;
-- el sink intenta recuperar la conexión;
-- no se utiliza `drop_newest`.
-
-Cuando el Gateway vuelve:
-
-```text
-disk buffer
-    │
-    ▼
-retry
-    │
-    ▼
-Gateway
-    │
-    ▼
-backlog entregado
-```
-
-## Reinicio del Agent
-
-También queremos validar:
-
-```text
-Gateway DOWN
-     │
-     ▼
-Agent acumula backlog
-     │
-     ▼
-restart Agent
-     │
-     ▼
-checkpoint + disk buffer sobreviven
-     │
-     ▼
-Gateway UP
-     │
-     ▼
-backlog recuperado
-```
-
-Esto permite diferenciar dos mecanismos:
-
-```text
-checkpoint = posición de lectura
-buffer     = eventos pendientes de entrega
-```
-
-## Garantía de entrega
-
-El objetivo es acercarnos a una semántica:
-
-```text
-at-least-once
-```
-
-y no:
-
-```text
-exactly-once
-```
-
-Un evento puede potencialmente volver a enviarse en determinadas condiciones
-de fallo.
-
-Por eso una arquitectura durable debe asumir que:
-
-```text
-duplicates are possible
-```
-
-y diseñar el almacenamiento posterior en consecuencia.
-
-## Límites de la durabilidad
-
-El disk buffer mejora la durabilidad, pero no significa que cada byte que haya
-entrado en memoria sea inmediatamente crash-safe.
-
-Vector sincroniza periódicamente el buffer a disco.
-
-Además:
-
-```text
-when_full: block
-```
-
-no crea capacidad infinita.
-
-Cuando el buffer se llena, el backlog debe acumularse en el origen.
-
-En este laboratorio el origen es:
-
-```text
 logs/app.log
+  │
+  ▼
+Vector Agent
+  │
+  │ .message
+  ▼
+Vector Gateway
+  │
+  │ .message
+  ▼
+storage_record
+  │
+  │ raw_message = .message
+  ▼
+PostgreSQL.raw_logs
 ```
 
-Por eso la preservación completa también depende de que el archivo no sea
-eliminado o rotado antes de que Vector pueda consumirlo.
-
-## Validación RAW
-
-La propiedad de las etapas anteriores continúa siendo:
+La propiedad principal de esta etapa es:
 
 ```text
-logs/app.log line
-        =
-Agent .message
-        =
-Gateway .message
+original_line == PostgreSQL.raw_message
 ```
 
-El buffering no debe modificar el contenido del evento.
+## Consultas
+
+Cantidad total:
+
+```sql
+SELECT count(*)
+FROM raw_logs;
+```
+
+Últimos eventos:
+
+```sql
+SELECT
+    id,
+    ingested_at,
+    agent_timestamp,
+    host,
+    source_file,
+    raw_message
+FROM raw_logs
+ORDER BY ingested_at DESC
+LIMIT 20;
+```
+
+Solamente las líneas RAW:
+
+```sql
+SELECT raw_message
+FROM raw_logs
+ORDER BY ingested_at DESC
+LIMIT 20;
+```
+
+## Persistencia
+
+PostgreSQL utiliza el volumen Docker:
+
+```text
+postgres-data
+```
+
+El Agent utiliza:
+
+```text
+vector-agent-data
+```
+
+Por lo tanto existen actualmente dos estados persistentes independientes:
+
+```text
+vector-agent-data
+    ├── checkpoints
+    └── Agent disk buffer
+
+postgres-data
+    └── PostgreSQL database
+```
+
+## Estado de resiliencia
+
+Agent -> Gateway ya dispone de:
+
+```text
+checkpoint
+disk buffer
+retry
+acknowledgements
+```
+
+Gateway -> PostgreSQL todavía NO dispone de un disk buffer persistente
+configurado explícitamente.
+
+La resiliencia frente a una caída de PostgreSQL será validada en el próximo
+commit.
 
 ## Roadmap
 
 1. Inicializar el laboratorio. ✅
-2. Agregar `flog` como generador de logs. ✅
-3. Agregar Vector Agent leyendo el archivo local. ✅
+2. Agregar flog como generador. ✅
+3. Agregar Vector Agent. ✅
 4. Agregar Vector Gateway. ✅
-5. Validar buffering y recuperación Agent → Gateway. ← etapa actual
-6. Persistir logs RAW en PostgreSQL.
-7. Validar recuperación Gateway → PostgreSQL.
-8. Agregar visualización con Grafana.
-9. Agregar observabilidad del pipeline Vector.
-10. Agregar escenarios reproducibles de prueba.
-11. Documentar la arquitectura alcanzada.
+5. Agregar buffering persistente Agent -> Gateway. ✅
+6. Persistir logs RAW en PostgreSQL. ← etapa actual
+7. Validar recuperación Gateway -> PostgreSQL.
+8. Agregar Grafana.
+9. Agregar observabilidad del pipeline.
+10. Agregar tests reproducibles.
+11. Documentar la arquitectura final del milestone.
 
-## Milestone 1 — RAW pipeline
+## Milestone 1
 
-El primer milestone estará completo cuando podamos demostrar:
+El milestone estará completo cuando podamos demostrar:
 
 ```text
 flog
@@ -556,7 +474,7 @@ cumpliendo:
 original_line == raw_message
 ```
 
-y habiendo probado capacidades básicas de:
+y habiendo probado:
 
 ```text
 checkpoint
@@ -565,5 +483,4 @@ retry
 recovery
 ```
 
-El parsing y la normalización se incorporarán únicamente después de alcanzar
-este milestone.
+El parsing se incorporará únicamente después de completar este milestone.
