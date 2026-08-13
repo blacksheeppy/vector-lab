@@ -1,12 +1,16 @@
 # Vector Raw Logs Lab
 
-Laboratorio reproducible para estudiar una arquitectura centralizada de ingestión de logs basada en Vector.
+Laboratorio reproducible para estudiar una arquitectura centralizada de
+ingestión de logs basada en Vector.
 
-El proyecto se construye incrementalmente utilizando Git como registro de la evolución de la arquitectura. Cada etapa debe dejar el repositorio en un estado funcional y verificable.
+El proyecto se construye incrementalmente utilizando Git como registro de la
+evolución de la arquitectura. Cada etapa debe dejar el repositorio en un
+estado funcional y verificable.
 
 ## Objetivo
 
-El primer milestone del laboratorio busca demostrar el transporte y almacenamiento de una línea de log sin modificar su contenido.
+El primer milestone del laboratorio busca demostrar el transporte y
+almacenamiento de una línea de log sin modificar su contenido.
 
 La propiedad fundamental que queremos validar es:
 
@@ -70,7 +74,8 @@ routing
 storage delivery
 ```
 
-Durante el primer milestone no interpretará semánticamente el contenido de los logs.
+Durante el primer milestone no interpretará semánticamente el contenido
+de los logs.
 
 ### PostgreSQL
 
@@ -86,23 +91,23 @@ El contenido original del log deberá conservarse sin parsing.
 
 ## Principios del laboratorio
 
-* Cada etapa corresponde aproximadamente a un commit funcional.
-* Ningún commit debe dejar intencionalmente rota la infraestructura.
-* Las imágenes de contenedores utilizan versiones explícitas.
-* No se utiliza la etiqueta `latest`.
-* Las opciones específicas de Vector deberán verificarse contra la versión utilizada.
-* No se realizará parsing antes de validar el pipeline RAW end-to-end.
-* Los cambios serán revisados antes de realizar cada commit.
+- Cada etapa corresponde aproximadamente a un commit funcional.
+- Ningún commit debe dejar intencionalmente rota la infraestructura.
+- Las imágenes de contenedores utilizan versiones explícitas.
+- No se utiliza la etiqueta `latest`.
+- Las opciones específicas de Vector se verifican contra la versión utilizada.
+- No se realizará parsing antes de validar el pipeline RAW end-to-end.
+- Los cambios serán revisados antes de realizar cada commit.
 
 ## Requisitos
 
 Para trabajar con el laboratorio se necesita:
 
-* Git.
-* Docker Engine.
-* Docker Compose plugin.
-* Acceso al daemon de Docker.
-* Acceso a un registry de contenedores.
+- Git.
+- Docker Engine.
+- Docker Compose plugin.
+- Acceso al daemon de Docker.
+- Acceso a un registry de contenedores.
 
 La instalación puede verificarse con:
 
@@ -114,21 +119,32 @@ docker compose version
 
 ## Versiones utilizadas
 
-Las versiones se incorporan explícitamente a medida que aparecen componentes en el laboratorio.
-
 | Componente | Versión |
-| ---------- | ------- |
-| flog       | 0.4.0   |
+|---|---:|
+| flog | 0.4.0 |
+| Vector | 0.57.0 |
+
+Vector utiliza la variante de imagen:
+
+```text
+timberio/vector:0.57.0-debian
+```
 
 ## Estado actual
 
-Actualmente el laboratorio contiene únicamente el generador de logs:
+El pipeline implementado actualmente es:
 
 ```text
 flog
   │
   ▼
 logs/app.log
+  │
+  ▼
+Vector Agent
+  │
+  ▼
+stdout
 ```
 
 Estructura:
@@ -138,8 +154,10 @@ vector-raw-logs-lab/
 ├── README.md
 ├── .gitignore
 ├── docker-compose.yml
-└── logs/
-    └── .gitkeep
+├── logs/
+│   └── .gitkeep
+└── vector-agent/
+    └── vector.yaml
 ```
 
 Durante la ejecución, `flog` crea:
@@ -160,35 +178,119 @@ log-generator
 
 utiliza `flog` para generar continuamente logs Apache Combined.
 
-El archivo puede observarse directamente desde el host:
-
-```bash
-tail -f logs/app.log
-```
-
-El generador puede iniciarse de manera independiente:
+Puede iniciarse independientemente:
 
 ```bash
 docker compose up -d log-generator
 ```
 
-Su estado puede consultarse con:
+El archivo puede observarse desde el host:
 
 ```bash
-docker compose ps
+tail -f logs/app.log
 ```
 
-Para detenerlo:
+## Vector Agent
+
+El servicio:
+
+```text
+vector-agent
+```
+
+lee:
+
+```text
+/logs/app.log
+```
+
+utilizando el source:
+
+```text
+type: file
+```
+
+Cada línea se conserva en:
+
+```text
+.message
+```
+
+No existen transforms ni parsing.
+
+El pipeline interno actual es:
+
+```text
+file source
+    │
+    ▼
+.message
+    │
+    ▼
+console sink
+```
+
+El console sink utiliza:
+
+```text
+raw_message
+```
+
+para imprimir directamente el contenido de `.message`.
+
+Puede observarse con:
 
 ```bash
-docker compose stop log-generator
+docker compose logs -f vector-agent
 ```
+
+o sin el prefijo agregado por Docker Compose:
+
+```bash
+docker logs -f "$(docker compose ps -q vector-agent)"
+```
+
+## Checkpoints
+
+Vector utiliza:
+
+```text
+/var/lib/vector
+```
+
+como `data_dir`.
+
+El directorio se encuentra respaldado por el named volume:
+
+```text
+vector-agent-data
+```
+
+y contiene el estado necesario para que el source `file` mantenga sus
+checkpoints.
+
+El comportamiento frente a reinicios y fallos será validado explícitamente en
+una etapa posterior.
+
+## Validación RAW local
+
+En esta etapa queremos poder demostrar:
+
+```text
+logs/app.log line
+        =
+Vector .message
+        =
+console raw_message
+```
+
+Todavía no existe transporte de red.
 
 ## Roadmap
 
 1. Inicializar el laboratorio. ✅
-2. Agregar `flog` como generador de logs. ← etapa actual
-3. Agregar Vector Agent leyendo el archivo local.
+2. Agregar `flog` como generador de logs. ✅
+3. Agregar Vector Agent leyendo el archivo local. ← etapa actual
 4. Agregar Vector Gateway.
 5. Validar buffering y recuperación Agent → Gateway.
 6. Persistir logs RAW en PostgreSQL.
@@ -236,4 +338,5 @@ retry
 recovery
 ```
 
-El parsing y la normalización se incorporarán únicamente después de alcanzar este milestone.
+El parsing y la normalización se incorporarán únicamente después de alcanzar
+este milestone.

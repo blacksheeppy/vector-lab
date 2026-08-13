@@ -1,13 +1,28 @@
 # Vector Raw Logs Lab
 #
-# COMMIT 2:
-# En esta etapa solamente existe la fuente de logs.
-# Vector y el resto del pipeline se incorporarán en commits posteriores.
+# COMMIT 3:
+# Se incorpora Vector Agent como collector local.
+#
+# Pipeline actual:
+#
+#   flog
+#     |
+#     v
+#   logs/app.log
+#     |
+#     v
+#   Vector Agent
+#     |
+#     v
+#   stdout
+#
+# Todavía no existe Vector Gateway.
 
 services:
+
   log-generator:
-    # Se utiliza una versión explícita para mantener el laboratorio reproducible.
-    # No utilizar "latest".
+    # Se utiliza una versión explícita para mantener el laboratorio
+    # reproducible. No utilizar "latest".
     image: mingrammer/flog:0.4.0
 
     # flog 0.4.0 utiliza valores numéricos en segundos para --delay.
@@ -31,9 +46,53 @@ services:
       - "-w"
 
     volumes:
-      # Bind mount intencional:
-      # queremos observar exactamente el mismo archivo desde el host y,
-      # posteriormente, desde Vector Agent.
+      # flog necesita acceso de escritura porque es el productor del archivo.
       - type: bind
         source: ./logs
         target: /logs
+
+
+  vector-agent:
+    # Versión explícita de Vector.
+    # La variante Debian facilita tareas operativas y de troubleshooting
+    # durante las siguientes etapas del laboratorio.
+    image: timberio/vector:0.57.0-debian
+
+    # El source `file` agrega el hostname como metadata.
+    # Fijarlo evita que el ID aleatorio del container sea usado como hostname
+    # y hace reproducibles las pruebas del laboratorio.
+    hostname: vector-agent
+
+    environment:
+      # Conservamos warnings y errores internos, pero evitamos que los logs
+      # informativos normales de Vector contaminen la comparación del
+      # console sink con logs/app.log.
+      VECTOR_LOG: warn
+
+    volumes:
+      # Configuración del Agent.
+      - type: bind
+        source: ./vector-agent/vector.yaml
+        target: /etc/vector/vector.yaml
+        read_only: true
+
+      # El Agent solamente necesita leer el archivo producido por flog.
+      - type: bind
+        source: ./logs
+        target: /logs
+        read_only: true
+
+      # Los checkpoints del source `file` deben sobrevivir al ciclo de vida
+      # normal del container.
+      - type: volume
+        source: vector-agent-data
+        target: /var/lib/vector
+
+
+volumes:
+
+  # Estado persistente del Vector Agent.
+  #
+  # En esta etapa contiene principalmente los checkpoints del source `file`.
+  # El buffering persistente Agent -> Gateway se incorporará más adelante.
+  vector-agent-data:

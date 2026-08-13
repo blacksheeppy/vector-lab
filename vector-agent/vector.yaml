@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# Vector Agent
+# ---------------------------------------------------------------------------
+# Responsabilidad actual:
+#
+#   logs/app.log
+#        |
+#        v
+#   file source
+#        |
+#        v
+#   .message
+#        |
+#        v
+#   console
+#
+# No hay parsing, transforms ni enriquecimiento.
+# La línea original debe permanecer intacta en `.message`.
+# ---------------------------------------------------------------------------
+
+
+# El source `file` almacena sus checkpoints en este directorio.
+# Docker Compose lo monta sobre un volumen persistente.
+data_dir: /var/lib/vector
+
+
+sources:
+
+  app_logs:
+    # Lee el archivo producido por flog.
+    type: file
+
+    include:
+      - /logs/app.log
+
+    # En el primer descubrimiento del archivo queremos leer también las
+    # líneas que flog haya generado antes de iniciar Vector.
+    #
+    # Si ya existe un checkpoint válido, Vector reanudará desde él.
+    read_from: beginning
+
+
+sinks:
+
+  console:
+    # Sink temporal utilizado para validar la ingestión local antes de
+    # introducir Vector Gateway.
+    type: console
+
+    inputs:
+      - app_logs
+
+    # Emitimos solamente `.message`.
+    #
+    # raw_message evita serialización JSON y permite comparar directamente
+    # la salida de Vector con la línea existente en logs/app.log.
+    encoding:
+      codec: raw_message
