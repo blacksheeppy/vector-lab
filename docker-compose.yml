@@ -1,7 +1,21 @@
-# Vector Raw Logs Lab
-#
-# COMMIT 1:
-# El archivo Compose existe ￺nicamente para validar la base del laboratorio.
-# Los servicios se incorporar￡n incrementalmente en commits posteriores.
+services:
+  log-generator:
+    image: mingrammer/flog:0.4.0
 
-services: {}
+    command:
+      - "-f"
+      - "apache_combined"
+      - "-t"
+      - "log"
+      - "-o"
+      - "/logs/app.log"
+      - "-l"
+      - "-d"
+      - "1"
+      - "-w"
+    
+    volumes:
+      - type: bind
+        source: ./logs
+        target: /logs
+
