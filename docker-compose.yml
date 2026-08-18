@@ -19,3 +19,27 @@ services:
         source: ./logs
         target: /logs
 
+  vector-agent:
+    image: timberio/vector:0.57.0-debian
+    hostname: vector-agent
+
+    environment:
+      VECTOR_LOG: warn
+
+    volumes:
+      # Configuración del Agent.
+      - type: bind
+        source: ./vector-agent/vector.yaml
+        target: /etc/vector/vector.yaml
+        read_only: true
+      # logs
+      - type: bind
+        source: ./logs
+        target: /logs
+
+      - type: volume
+        source: vector-agent-data
+        target: /var/lib/vector
+
+volumes:
+  vector-agent-data:
